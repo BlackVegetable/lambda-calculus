@@ -24,7 +24,8 @@
 
 ;; user-parse (string --> ExprE)
 (define (user-parse user-input)
-  (parse (string->list user-input)))
+  (parse (begin (display (apply-currying (string->list user-input)))
+           (apply-currying (string->list user-input)))))
 
 (define (char->symbol input)
   (string->symbol (string input)))
@@ -82,7 +83,6 @@
     ;; App to something else, so no need to rearrange:
     (AppE function argument)]))
 
-
 ;; make-arg-list (list of char -> list of char)
 ;; Takes a list of chars and returns a subset of that list that occurs
 ;; prior to a period character including that period (if it exists.)
@@ -96,6 +96,8 @@
               (list #\λ #\a #\b #\c #\.))
 (check-equal? (make-arg-list (list #\λ #\a #\b))
               (list #\λ #\a #\b))
+(check-equal? (make-arg-list (list #\λ #\a #\.))
+              (list #\λ #\a #\.))
                                    
 ;; Converts a list of function arguments terminated by a period into a list of curried single argument functions.
 (define (rewrite-arity list-of-char is-first)
@@ -109,6 +111,22 @@
 (check-equal? (rewrite-arity (list #\λ #\a #\.) #t)
               (list #\λ #\a #\.))
 
+;; rest-x
+;; applies rest x times.
+(define (rest-x lyst x)
+  (cond
+    [(x . <= . 0) lyst]
+    [(x . > . 0) (rest-x (rest lyst) (sub1 x))]))
+
+(check-equal? (rest-x (list 1 2 3 4 5) 3)
+              (list 4 5))
+(check-equal? (rest-x (list 1 2 3 4 5) 0)
+              (list 1 2 3 4 5))
+(check-equal? (rest-x (list 1 2 3 4 5) -2)
+              (list 1 2 3 4 5))
+(check-equal? (rest-x (list 'a (list 2 3)) 1)
+              (list (list 2 3)))
+
 ;; apply-currying
 ;; List of char -> list of char
 ;; Turns input containing multiple arity functions into equivalent input containing
@@ -121,17 +139,21 @@
      (cond
        [(equal? current #\λ)
         (cond
-          [(equal? (third list-of-char) #\.) (cons (drop-right list-of-char 3) (apply-currying (take-right list-of-char 3)))]
+          [(equal? (third list-of-char) #\.) (append (take list-of-char 3) (apply-currying (rest-x list-of-char 3)))]
           [else 
-           (define args-list (make-arg-list list-of-char))
-           (define args-length (length args-list)) ; λabc. --> 3
+           (define args-list  (make-arg-list list-of-char))
+           (define args-length (length args-list)) ; λabc. --> 5
            (define curried-args (rewrite-arity args-list #t)) ; λa.λb.λc.
-           (cons curried-args (apply-currying (take-right list-of-char args-length)))])]
-       [else (cons current (apply-currying (rest list-of-char)))])]))
+           (append curried-args (apply-currying (rest-x list-of-char args-length)))])]
+       [else (append (list current) (apply-currying (rest list-of-char)))])]))
 
-;; This test fails currently.  Currying needs some work. TODO
-;(check-equal? (apply-currying (list #\( #\λ #\a #\b #\c #\. #\d #\) #\( #\λ #\e #\f #\. #\g #\h #\) #\i))
-;                              (list #\( #\λ #\a #\. #\λ #\b #\. #\λ #\c #\. #\d #\) #\( #\λ #\e #\. #\λ #\f #\. #\g #\h #\) #\i))
+(check-equal? (apply-currying (list #\( #\λ #\a #\b #\c #\. #\d #\) #\( #\λ #\e #\f #\. #\g #\h #\) #\i)) ; (λabc.d)(λef.gh)i
+              (list #\( #\λ #\a #\. #\λ #\b #\. #\λ #\c #\. #\d #\) #\( #\λ #\e #\. #\λ #\f #\. #\g #\h #\) #\i)) ; (λa.λb.λc.d)(λe.λf.gh)i
+(check-equal? (apply-currying (string->list "(λxyz.ab)(λgh.i)(λj.k)v"))
+              (string->list "(λx.λy.λz.ab)(λg.λh.i)(λj.k)v"))
+(check-equal? (apply-currying (string->list "λx.x"))
+              (string->list "λx.x"))
+             
 
 ;; <expr> = <id>
 ;;        | λ<id>.<expr>
@@ -152,7 +174,7 @@
      [(equal? current #\λ)
       (if (or (empty? (rest list-of-char)) 
               (not (char-letter? (second list-of-char)))
-              (not (equal? (third list-of-char) #\.))) ; Presently only single arity functions are permitted. 
+              (not (equal? (third list-of-char) #\.))) ; Mulitple arity functions have been Curried by this point.
           (error "Invalid function given.")
           (FuncE (VarE (char->symbol (second list-of-char)))
                  (parse (rest (rest (rest list-of-char))))))]
@@ -229,7 +251,6 @@
   (let* ([param (FuncE-var fun)]
          [body (FuncE-expr fun)])
     ; arg can either be a variable or a function.
-    ; Can arg be an application that is in reduced form (contains only free variables)?
     (replace-if-equal param body arg)))
 
 ;; Some example functions:
@@ -310,7 +331,5 @@
 (pretty-display "Hint: You can type the lambda character (λ) in Dr. Racket by hitting CTRL-\\\n")
 (pretty-display "Variable identifiers must all be lowercase English characters.\nThis version of the emulator does not attempt renaming operators.")
 (pretty-display "Thus, it is recommended that you use unique identifiers when the semantic intention is for two variables to be separate.\n")
-(pretty-display "Additionally, lambdas may only have one argument in this version -- which is technically consistent with lambda calculus")
-(pretty-display "as it was initially defined.")
 
               

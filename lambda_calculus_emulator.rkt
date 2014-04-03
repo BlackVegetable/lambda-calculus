@@ -17,15 +17,26 @@
 ;;   - (FuncE symbol ExprE) ~ Play that FuncE music, white boy! ~ 
 ;;   - (AppE ExprE ExprE)
 
+;; An ExprT is either:
+;;   - (VarE symbol)
+;;   - (FuncT symbol symbol ExprT)
+;;   - (AppE ExprT ExprT)
+
 (struct ExprE (content) #:transparent)
 (struct VarE (sym) #:transparent)
 (struct FuncE (var expr) #:transparent)
 (struct AppE (expr1 expr2) #:transparent)
+(struct FuncT (var type expr) #:transparent) ; STLC
+(struct TypeT (sym) #:transparent) ; STLC
 
 ;; user-parse (string --> ExprE)
 (define (user-parse user-input)
   (parse (begin (display (apply-currying (string->list user-input)))
-           (apply-currying (string->list user-input)))))
+                (apply-currying (string->list user-input)))))
+
+;; typed-user-parse (string --> ExprT)
+(define (typed-user-parse user-input)
+  (typed-parse (string->list user-input)))
 
 (define (char->symbol input)
   (string->symbol (string input)))
@@ -37,6 +48,11 @@
 ;;  Recognize lowercase a through z
 (define (char-letter? c)
   (<= (char->integer #\a) (char->integer c) (char->integer #\z)))
+
+;; char-cap-letter? : char -> boolean
+;;  Recognize uppercase A through Z
+(define (char-cap-letter? c)
+  (<= (char->integer #\A) (char->integer c) (char->integer #\Z)))
 
 ;; balance-parentheses : list-of-chars list-of-char integer
 ;;  Splits `chars` into a list of characters within an initial set of
@@ -222,6 +238,71 @@
               (AppE (FuncE (VarE 'x) (AppE (VarE 'x) (VarE 'y)))
                     (VarE 'z)))
 
+;; typed-parse (list of char --> ExprT)
+;; Takes a string and converts it into simply typed lambda calculus objects.
+;; Throws an error if it receives bad input. Its behavior is undefined
+;; in the event of a plauge of hobbits.
+(define (typed-parse list-of-char)
+  (cond
+   [(empty? list-of-char) (error "invalid input")]
+   [else
+    (define current (first list-of-char))
+    (cond
+     [(equal? current #\λ)
+      (if (or (empty? (rest list-of-char)) 
+              (not (char-letter? (second list-of-char)))
+              (not (equal? (third list-of-char) #\:))
+              (not (char-cap-letter? (fourth list-of-char)))
+              (not (equal? (fifth list-of-char) #\.))) ; Currying is not implicit in STLC syntax.
+          (error "Invalid function given.")
+          (FuncT (VarE (char->symbol (second list-of-char)))
+                 (TypeT (char->symbol (fourth list-of-char)))
+                 (typed-parse (rest (rest (rest (rest (rest list-of-char))))))))]
+     [(equal? current #\()
+      (define-values (in-parens after-parens) (balance-parentheses (rest list-of-char) null 1))
+      (cond
+       [(null? after-parens)
+        ;; A single expression with parentheses:
+        (typed-parse in-parens)]
+       [else
+        (define function (typed-parse in-parens))
+        (define argument (typed-parse after-parens))
+        (build-app function argument (first after-parens))])]
+     [(char-letter? current)
+      (cond
+       [(empty? (rest list-of-char))
+        ;; This is *only* character
+        (VarE (char->symbol current))]
+       [else
+        (build-app (VarE (char->symbol current))
+                   (typed-parse (rest list-of-char))
+                   (second list-of-char))])])]))
+
+(check-equal? (typed-user-parse "x")
+              (VarE 'x))
+(check-equal? (typed-user-parse "λx:N.x")
+              (FuncT (VarE 'x)(TypeT 'N) (typed-parse (list #\x))))
+(check-equal? (typed-user-parse "λx:N.x")
+              (FuncT (VarE 'x)(TypeT 'N) (VarE 'x)))
+(check-equal? (typed-user-parse "xy")
+              (AppE (VarE 'x) (VarE 'y)))
+(check-equal? (typed-user-parse "(λx:S.xy)d")
+              (AppE (FuncT (VarE 'x)(TypeT 'S)(AppE (VarE 'x)(VarE 'y)))(VarE 'd)))
+(check-equal? (typed-user-parse "xyz")
+              (AppE (AppE (VarE 'x) (VarE 'y)) (VarE 'z)))
+(check-equal? (typed-user-parse "(xy)z")
+              (AppE (AppE (VarE 'x) (VarE 'y)) (VarE 'z)))
+(check-equal? (typed-user-parse "x(yz)")
+              (AppE (VarE 'x) (AppE (VarE 'y) (VarE 'z))))
+(check-equal? (typed-user-parse "xλx:N.x")
+              (AppE (VarE 'x) (FuncT (VarE 'x)(TypeT 'N) (VarE 'x))))
+(check-equal? (typed-user-parse "λx:B.xy")
+              (FuncT (VarE 'x) (TypeT 'B)(AppE (VarE 'x) (VarE 'y))))
+(check-equal? (typed-user-parse "(λx:N.xy)z")
+              (AppE (FuncT (VarE 'x)(TypeT 'N) (AppE (VarE 'x) (VarE 'y)))
+                    (VarE 'z)))
+
+
 ;; replace-if-equal (VarE ExprE ExprE) -> ExprE
 (define (replace-if-equal to-match candidate replacement)
   (cond
@@ -269,15 +350,34 @@
 (check-equal? (consume (consume second-func (VarE 'x)) (VarE 'y))
               (VarE 'y))
 
+(define (FuncT->FuncE func)
+  (FuncE (FuncT-var func)
+         (FuncT-expr func)))
+
+(check-equal? (FuncT->FuncE (FuncT (VarE 'x)(TypeT 'B)(AppE (FuncT (VarE 'y)(TypeT 'B)(VarE 'z))(VarE 'a))))
+              (FuncE (VarE 'x)(AppE (FuncT (VarE 'y)(TypeT 'B)(VarE 'z))(VarE 'a))))
+
 ;; interp (ExprE environment --> ExprE)
 ;; Does not contain the rename operator, and may fail if duplicate names are used!
+;; Used for both typed and untyped Lambda Calculus.  STLC should interp the same as untyped.
+;; Only the type checker cares about the types.
 (define (interp expr)
   (cond
     [(VarE? expr)(VarE (VarE-sym expr))]
     [(FuncE? expr)(FuncE (interp (FuncE-var expr)) 
                          (interp (FuncE-expr expr)))]
+    [(FuncT? expr)(interp (FuncT->FuncE expr))]
     [(AppE? expr)
      (cond
+       [(and (FuncT? (AppE-expr1 expr))(FuncT? (AppE-expr2 expr)))
+        (consume (interp (FuncT->FuncE (AppE-expr1 expr)))
+                 (interp (FuncT->FuncE (AppE-expr2 expr))))]
+       [(FuncT? (AppE-expr1 expr))
+        (consume (interp (FuncT->FuncE (AppE-expr1 expr)))
+                 (interp (AppE-expr2 expr)))]
+       [(FuncT? (AppE-expr2 expr))
+        (AppE (interp (AppE-expr1 expr))
+              (interp (FuncT->FuncE (AppE-expr2 expr))))]
        [(FuncE? (AppE-expr1 expr))
         (consume (interp (AppE-expr1 expr))
                  (interp (AppE-expr2 expr)))]
@@ -293,8 +393,10 @@
               (AppE (VarE 'x)(VarE 'y)))
 (check-equal? (interp (AppE (FuncE (VarE 'x)(AppE (VarE 'x)(VarE 'y)))(VarE 'd)))
               (AppE (VarE 'd)(VarE 'y)))
+(check-equal? (interp (AppE (FuncT (VarE 'x)(TypeT 'B)(AppE (VarE 'x)(VarE 'y)))(VarE 'd)))
+              (AppE (VarE 'd)(VarE 'y)))
 
-;; expr->string (String ->)
+;; evaluate (String ->)
 ;; The main user function in this program.
 ;; Displays the intermediate and final results of a lambda calculus expression
 ;; given to it as a string.  The final result is also displayed in string format.
@@ -308,6 +410,23 @@
       (pretty-display result)
       (pretty-display "\nreduced form: ") 
       (pretty-display (expr->string result)))))
+
+;; typed-evaluate (String ->)
+;; The main user function for typed input in this program.
+;; Currently preforms identically to the untyped "evaluate" but
+;; allows for and ignores typed syntax.  Does not support implicit currying.
+;; Does not yet perform type inference.
+(define (typed-evaluate user-input-string)
+  (let* ([expr (typed-user-parse user-input-string)]
+         [result (interp expr)])
+    (begin 
+      (pretty-display "internal representation: ")
+      (pretty-display expr)
+      (pretty-display "\nreduced representation: ")
+      (pretty-display result)
+      (pretty-display "\nreduced form: ") 
+      (pretty-display (expr->string result))
+      (pretty-display "\nType information not available in this version."))))
 
 ;; expr->string (ExprE -> String)
 ;; Formats an ExprE into a String with parenthesis used to avoid function ambiguity.
@@ -326,10 +445,13 @@
 (check-equal? (expr->string (AppE (FuncE (VarE 'x)(AppE (VarE 'x)(VarE 'y)))(VarE 'd)))
               "(λx.xy)d")
 
-(pretty-display "Welcome to the Lambda Calculus Emulator.\nTo get started, call evaluate with a string representation of your expression.\n")
+(pretty-display "\nWelcome to the Lambda Calculus Emulator.\nTo get started, call evaluate with a string representation of your expression.\n")
 (pretty-display "Example: (evaluate \"(λx.xy)z\")\n")
 (pretty-display "Hint: You can type the lambda character (λ) in Dr. Racket by hitting CTRL-\\\n")
 (pretty-display "Variable identifiers must all be lowercase English characters.\nThis version of the emulator does not attempt renaming operators.")
 (pretty-display "Thus, it is recommended that you use unique identifiers when the semantic intention is for two variables to be separate.\n")
+(pretty-display "To use Simply Typed Lambda Calculus, use the typed-evaluate function instead.")
+(pretty-display "Types are represented as uppercase English characters. (Multiple arity lambdas are not permitted in STLC.)")
+(pretty-display "Example: (typed-evaluate \"(λx:N.xy)z\")\n")
 
               

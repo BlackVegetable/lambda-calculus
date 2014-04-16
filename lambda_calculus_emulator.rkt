@@ -19,20 +19,30 @@
 
 ;; An ExprT is either:
 ;;   - (VarE symbol)
-;;   - (FuncT symbol symbol ExprT)
+;;   - (FuncT symbol TypeT ExprT)
 ;;   - (AppE ExprT ExprT)
 
-(struct ExprE (content) #:transparent)
+;; A TypeT is either:
+;;   - symbol
+;;   - ArrowT
+
+;; An ArrowT is:
+;;   - (TypeT -> TypeT)
+
 (struct VarE (sym) #:transparent)
 (struct FuncE (var expr) #:transparent)
 (struct AppE (expr1 expr2) #:transparent)
 (struct FuncT (var type expr) #:transparent) ; STLC
-(struct TypeT (sym) #:transparent) ; STLC
+(struct TypeT (type) #:transparent) ; STLC
+(struct ArrowT (type1 type2) #:transparent) ; STLC
+
+;; VarE TypeT
+(struct TypeBinding (var type)) ; STLC
 
 ;; user-parse (string --> ExprE)
 (define (user-parse user-input)
-  (parse (begin (display (apply-currying (string->list user-input)))
-                (apply-currying (string->list user-input)))))
+  (parse ;(begin (apply-currying (string->list user-input)))
+                (apply-currying (string->list user-input))))
 
 ;; typed-user-parse (string --> ExprT)
 (define (typed-user-parse user-input)
@@ -238,10 +248,18 @@
               (AppE (FuncE (VarE 'x) (AppE (VarE 'x) (VarE 'y)))
                     (VarE 'z)))
 
+;; <expr> = <id>
+;;        | λ<id>:<type>.<expr>
+;;        | <expr><expr>
+;;        | (<expr>)
+;; <id> = a | ... | z
+;; <type> = A | ... | Z
+;;        | <type>-><type>
+
 ;; typed-parse (list of char --> ExprT)
 ;; Takes a string and converts it into simply typed lambda calculus objects.
 ;; Throws an error if it receives bad input. Its behavior is undefined
-;; in the event of a plauge of hobbits.
+;; in the event of a plauge of Hobbits.
 (define (typed-parse list-of-char)
   (cond
    [(empty? list-of-char) (error "invalid input")]
@@ -249,15 +267,20 @@
     (define current (first list-of-char))
     (cond
      [(equal? current #\λ)
-      (if (or (empty? (rest list-of-char)) 
-              (not (char-letter? (second list-of-char)))
-              (not (equal? (third list-of-char) #\:))
-              (not (char-cap-letter? (fourth list-of-char)))
-              (not (equal? (fifth list-of-char) #\.))) ; Currying is not implicit in STLC syntax.
-          (error "Invalid function given.")
-          (FuncT (VarE (char->symbol (second list-of-char)))
-                 (TypeT (char->symbol (fourth list-of-char)))
-                 (typed-parse (rest (rest (rest (rest (rest list-of-char))))))))]
+      (cond
+       [(or (empty? (rest list-of-char)) 
+            (not (char-letter? (second list-of-char)))
+            (empty? (rest (rest list-of-char)) )
+            (not (equal? (third list-of-char) #\:)))
+        (error "Invalid function given.")]
+       [else
+        (define-values (type rest-of-input)
+          (parse-type (rest (rest (rest list-of-char)))))
+        (if (not (equal? (first rest-of-input) #\.)) ; Currying is not implicit in STLC syntax.
+            (error "Invalid function given.")
+            (FuncT (VarE (char->symbol (second list-of-char)))
+                   type
+                   (typed-parse (rest rest-of-input))))])]
      [(equal? current #\()
       (define-values (in-parens after-parens) (balance-parentheses (rest list-of-char) null 1))
       (cond
@@ -277,6 +300,34 @@
         (build-app (VarE (char->symbol current))
                    (typed-parse (rest list-of-char))
                    (second list-of-char))])])]))
+
+(define (parse-type list-of-char)
+  (cond
+   [(and (not (empty? list-of-char))
+         (char-cap-letter? (first list-of-char)))
+    (maybe-arrow (TypeT (char->symbol (first list-of-char)))
+                 (rest list-of-char))]
+   [(and (not (empty? list-of-char))
+         (equal? (first list-of-char) #\())
+    (define-values (in-parens after-parens) (balance-parentheses (rest list-of-char) null 1))
+    (define-values (type pre-rest-of-input) (parse-type in-parens))
+    (unless (empty? pre-rest-of-input)
+      (error "Invalid type given."))
+    (maybe-arrow type after-parens)]
+   [else
+    (error "Invalid type given.")]))
+
+(define (maybe-arrow type list-of-char)
+  (cond
+   [(and (not (empty? list-of-char))
+         (equal? (first list-of-char) #\-)
+         (not (empty? (rest list-of-char)))
+         (equal? (second list-of-char) #\>))
+    (define-values (result-type rest-of-input)
+      (parse-type (rest (rest list-of-char))))
+    (values (ArrowT type result-type)
+            rest-of-input)]
+   [else (values type list-of-char)]))
 
 (check-equal? (typed-user-parse "x")
               (VarE 'x))
@@ -301,7 +352,22 @@
 (check-equal? (typed-user-parse "(λx:N.xy)z")
               (AppE (FuncT (VarE 'x)(TypeT 'N) (AppE (VarE 'x) (VarE 'y)))
                     (VarE 'z)))
-
+(check-equal? (typed-user-parse "(λx:N->B.xy)z")
+              (AppE (FuncT (VarE 'x) (ArrowT (TypeT 'N) (TypeT 'B))
+                           (AppE (VarE 'x) (VarE 'y)))
+                    (VarE 'z)))
+(check-equal? (typed-user-parse "(λx:N->B->C.xy)z")
+              (AppE (FuncT (VarE 'x) (ArrowT (TypeT 'N)
+                                             (ArrowT (TypeT 'B)
+                                                     (TypeT 'C)))
+                           (AppE (VarE 'x) (VarE 'y)))
+                    (VarE 'z)))
+(check-equal? (typed-user-parse "(λx:(N->B)->C.xy)z")
+              (AppE (FuncT (VarE 'x) (ArrowT (ArrowT (TypeT 'N)
+                                                     (TypeT 'B))
+                                             (TypeT 'C))
+                           (AppE (VarE 'x) (VarE 'y)))
+                    (VarE 'z)))
 
 ;; replace-if-equal (VarE ExprE ExprE) -> ExprE
 (define (replace-if-equal to-match candidate replacement)
@@ -396,6 +462,222 @@
 (check-equal? (interp (AppE (FuncT (VarE 'x)(TypeT 'B)(AppE (VarE 'x)(VarE 'y)))(VarE 'd)))
               (AppE (VarE 'd)(VarE 'y)))
 
+(define (lookup var vals)
+  (cond
+    [(empty? vals) (TypeT #f)]
+    [else (if (equal? var (TypeBinding-var (first vals)))
+              (TypeBinding-type (first vals))
+              (lookup var (rest vals)))]))
+
+;; expr->string (ExprE -> String)
+;; Formats an ExprE into a String with parenthesis used to avoid function ambiguity.
+(define (expr->string expr)
+  (cond
+    [(VarE? expr) (symbol->string (VarE-sym expr))]
+    [(FuncE? expr)(string-append "(λ" (expr->string (FuncE-var expr)) "." (expr->string (FuncE-expr expr)) ")" )]
+    [(FuncT? expr)(expr->string (FuncT->FuncE expr))]
+    [(AppE? expr) (string-append (expr->string (AppE-expr1 expr)) (expr->string (AppE-expr2 expr)))]))
+ 
+(check-equal? (expr->string (VarE 'x))
+              "x")
+(check-equal? (expr->string (AppE (VarE 'x) (VarE 'y)))
+              "xy")
+(check-equal? (expr->string (FuncE (VarE 'x) (AppE (VarE 'x)(VarE 'x))))
+              "(λx.xx)")
+(check-equal? (expr->string (AppE (FuncE (VarE 'x)(AppE (VarE 'x)(VarE 'y)))(VarE 'd)))
+              "(λx.xy)d")
+
+(define (type->string tp)
+  (cond
+    [(ArrowT? tp) 
+     (define first-arrow? (ArrowT? (ArrowT-type1 tp)))
+     (define first-void? (void? (ArrowT-type1 tp)))
+     (define second-arrow? (ArrowT? (ArrowT-type2 tp)))
+     (define second-void? (void? (ArrowT-type2 tp)))
+     (string-append (if first-arrow? "(" "")
+                    (if first-void? "BAD-TYPE" (type->string (ArrowT-type1 tp)))
+                    (if first-arrow? ")" "")
+                    "->"
+                    (if second-arrow? "(" "")
+                    (if second-void? "BAD-TYPE" (type->string (ArrowT-type2 tp)))
+                    (if second-arrow? ")" ""))]
+    [(TypeT? tp) (if (TypeT-type tp)
+                     (symbol->string (TypeT-type tp))
+                     "BAD-TYPE")]))
+
+(check-equal? (type->string (TypeT 'B)) "B")
+(check-equal? (type->string (ArrowT (TypeT 'B)(TypeT 'N))) "B->N")
+(check-equal? (type->string (ArrowT (ArrowT (TypeT 'S)(TypeT 'B))(TypeT 'B))) "(S->B)->B")
+(check-equal? (type->string (ArrowT (TypeT 'N)(TypeT #f))) "N->BAD-TYPE")
+
+
+;; input-of
+;; ArrowT -> type
+;; An unexpectedly simple function.
+(define (input-of arrow)
+  (if (ArrowT? arrow)
+      (ArrowT-type1 arrow)
+      (error "input-of only applies to ArrowT types.")))
+
+(check-equal? (input-of (ArrowT (TypeT 'A)(TypeT 'B)))
+              (TypeT 'A))
+(check-equal? (input-of (ArrowT 
+                         (ArrowT (TypeT 'C)(TypeT 'D))
+                         (TypeT 'E)))
+              (ArrowT (TypeT 'C)(TypeT 'D)))
+(check-equal? (input-of (ArrowT (TypeT 'A)
+                                (ArrowT (TypeT 'B)
+                                        (TypeT 'C))))
+              (TypeT 'A))
+(check-equal? (input-of (ArrowT
+                         (ArrowT
+                          (TypeT 'A)
+                          (ArrowT
+                           (TypeT 'B)
+                           (TypeT 'C)))
+                         (ArrowT
+                          (ArrowT
+                           (TypeT 'D)
+                           (TypeT 'E))
+                          (TypeT 'F))))
+              (ArrowT
+               (TypeT 'A)
+               (ArrowT
+                (TypeT 'B)
+                (TypeT 'C))))
+        
+;; output-of
+;; ArrowT -> type
+;; An unexpectedly simple function.
+(define (output-of arrow)
+  (if (ArrowT? arrow)
+      (ArrowT-type2 arrow)
+      (error "output-of only applies to ArrowT types.")))
+
+(check-equal? (output-of (ArrowT (TypeT 'A)(TypeT 'B)))
+              (TypeT 'B))
+(check-equal? (output-of (ArrowT 
+                          (ArrowT (TypeT 'C)(TypeT 'D))
+                          (TypeT 'E)))
+              (TypeT 'E))
+(check-equal? (output-of (ArrowT (TypeT 'A)
+                                (ArrowT (TypeT 'B)
+                                        (TypeT 'C))))
+              (ArrowT (TypeT 'B)
+                      (TypeT 'C)))
+(check-equal? (output-of (ArrowT
+                         (ArrowT
+                          (TypeT 'A)
+                          (ArrowT
+                           (TypeT 'B)
+                           (TypeT 'C)))
+                         (ArrowT
+                          (ArrowT
+                           (TypeT 'D)
+                           (TypeT 'E))
+                          (TypeT 'F))))
+              (ArrowT
+               (ArrowT
+                (TypeT 'D)
+                (TypeT 'E))
+               (TypeT 'F)))
+
+
+;; typecheck (ExprT TypeEnv -> TypeT or #f)
+(define (typecheck a tenv)
+  (cond
+    [(VarE? a) (lookup a tenv)]
+    [(FuncT? a) (ArrowT (FuncT-type a)
+                        (typecheck (FuncT-expr a)
+                                   (cons (TypeBinding (FuncT-var a) (FuncT-type a))
+                                         tenv)))]
+    [(AppE? a) (cond
+                 [(FuncT? (AppE-expr1 a))
+                  (define func-type (FuncT-type (AppE-expr1 a)))
+                  (cond
+                    [(ArrowT? func-type)
+                     (define input-type (ArrowT-type1 func-type))
+                     (define output-type (ArrowT-type2 func-type))
+                     (define arg-type (typecheck (AppE-expr2 a) tenv))
+                     (if (equal? input-type arg-type)
+                         output-type
+                         (begin (display "\nTypes do not match. Expected input: ")
+                                (display (type->string input-type))
+                                (display " vs Actual input: ")
+                                (display (type->string arg-type))
+                                (TypeT #f)))]
+                    [else (begin (display "\nNo type possible. [This equation contains a free variable: ")
+                                 (display (expr->string (AppE-expr1 a)))
+                                 (display "]")
+                                 (TypeT #f))])]
+                 [else (AppE-expr1 a)  ; We can't evaluate it, but we can still type-check it.
+                  (define left-type (typecheck (AppE-expr1 a) tenv))
+                  (define right-type (typecheck (AppE-expr2 a) tenv))
+                  (cond
+                    [(and (ArrowT? left-type)(equal? right-type (input-of left-type)))(output-of left-type)]
+                    [else (begin (display "\nType-check failure. Type of left-side: ")
+                                 (display (type->string left-type))
+                                 (display " vs Type of right-side (argument): ")
+                                 (display (type->string right-type))
+                                 (display "\n")
+                                 (TypeT #f))])])]))           
+
+#| NOISY TESTS!
+(check-equal? (typecheck (VarE 'x) empty) (TypeT #f)) 
+(check-equal? (typecheck (typed-user-parse "(λx:(N->B)->S.x)(λv:N.yv)j") 
+                         (list (TypeBinding (VarE 'y)(ArrowT (TypeT 'N)
+                                                             (ArrowT (TypeT 'N)
+                                                                     (TypeT 'B))))
+                               (TypeBinding (VarE 'j)(TypeT 'N)))) 
+              (TypeT #f))
+(check-equal? (typecheck (typed-user-parse "(λx:(N->B)->S.k)(λv:N->N->B.y)j") 
+                         (list (TypeBinding (VarE 'y)(ArrowT (TypeT 'N)
+                                                             (TypeT 'B)))
+                               (TypeBinding (VarE 'j)(TypeT 'N)))) 
+              (TypeT 'S))
+(check-equal? (typecheck (typed-user-parse "(λx:A->A.xx)(λx:A->A.xx)") empty)
+                         (TypeT #f))
+|#
+
+;; Let's test the basic rules of type inference according to en.wikipedia.org/wiki/Simply_typed_lambda_calculus :
+; 1. If x has type N in the context, we know that x has type N.
+(check-equal? (typecheck (VarE 'x) (list (TypeBinding (VarE 'x) (TypeT 'N)))) 
+              (TypeT 'N))
+
+; 2. If, in a certain context with x having type N, e has type V, then, in the same context without x, λx:N.e has type N->V .
+(check-equal? (typecheck (FuncT (VarE 'x)(TypeT 'N)(VarE 'e))(list (TypeBinding (VarE 'e)(TypeT 'V))))
+              (ArrowT (TypeT 'N)(TypeT 'V)))
+
+; 3. If, in a certain context, e has type N->T and d has type N then (ed) has type T.
+(check-equal? (typecheck (AppE (VarE 'e)(VarE 'd))(list (TypeBinding (VarE 'e)(ArrowT (TypeT 'N)(TypeT 'T)))
+                                                        (TypeBinding (VarE 'd)(TypeT 'N))))
+              (TypeT 'T))
+
+;; Now let's test some basic "closed terms":
+; 1. The identify function or L-combinator.
+(check-equal? (typecheck (FuncT (VarE 'x)(TypeT 'T)(VarE 'x)) empty)
+              (ArrowT (TypeT 'T)(TypeT 'T)))
+
+; 2. The K-combinator:
+(check-equal? (typecheck (FuncT (VarE 'x)(TypeT 'O)(FuncT (VarE 'y)(TypeT 'T)(VarE 'x))) empty)
+              (ArrowT (TypeT 'O)(ArrowT (TypeT 'T)(TypeT 'O))))
+
+; 3. The S-combinator:
+(check-equal? (typecheck (typed-user-parse "λx:T->U->V.λy:T->U.λz:T.xz(yz)") empty)
+              (ArrowT
+               (ArrowT
+                (TypeT 'T)
+                (ArrowT
+                 (TypeT 'U)
+                 (TypeT 'V)))
+               (ArrowT
+                (ArrowT
+                 (TypeT 'T)
+                 (TypeT 'U))
+                (ArrowT
+                 (TypeT 'T)
+                 (TypeT 'V)))))
+              
 ;; evaluate (String ->)
 ;; The main user function in this program.
 ;; Displays the intermediate and final results of a lambda calculus expression
@@ -426,24 +708,10 @@
       (pretty-display result)
       (pretty-display "\nreduced form: ") 
       (pretty-display (expr->string result))
-      (pretty-display "\nType information not available in this version."))))
+      (pretty-display "\nType information: ")
+      (pretty-display (type->string (typecheck expr empty))))))
 
-;; expr->string (ExprE -> String)
-;; Formats an ExprE into a String with parenthesis used to avoid function ambiguity.
-(define (expr->string expr)
-  (cond
-    [(VarE? expr) (symbol->string (VarE-sym expr))]
-    [(FuncE? expr)(string-append "(λ" (expr->string (FuncE-var expr)) "." (expr->string (FuncE-expr expr)) ")" )]
-    [(AppE? expr) (string-append (expr->string (AppE-expr1 expr)) (expr->string (AppE-expr2 expr)))]))
- 
-(check-equal? (expr->string (VarE 'x))
-              "x")
-(check-equal? (expr->string (AppE (VarE 'x) (VarE 'y)))
-              "xy")
-(check-equal? (expr->string (FuncE (VarE 'x) (AppE (VarE 'x)(VarE 'x))))
-              "(λx.xx)")
-(check-equal? (expr->string (AppE (FuncE (VarE 'x)(AppE (VarE 'x)(VarE 'y)))(VarE 'd)))
-              "(λx.xy)d")
+
 
 (pretty-display "\nWelcome to the Lambda Calculus Emulator.\nTo get started, call evaluate with a string representation of your expression.\n")
 (pretty-display "Example: (evaluate \"(λx.xy)z\")\n")
@@ -452,6 +720,6 @@
 (pretty-display "Thus, it is recommended that you use unique identifiers when the semantic intention is for two variables to be separate.\n")
 (pretty-display "To use Simply Typed Lambda Calculus, use the typed-evaluate function instead.")
 (pretty-display "Types are represented as uppercase English characters. (Multiple arity lambdas are not permitted in STLC.)")
-(pretty-display "Example: (typed-evaluate \"(λx:N.xy)z\")\n")
+(pretty-display "Example: (typed-evaluate \"(λx:A.λy:A.x)\")\n")
 
               
